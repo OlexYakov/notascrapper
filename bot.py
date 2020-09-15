@@ -1,6 +1,8 @@
 import configparser
-from typing import Tuple
+from pyclbr import Function
+from typing import List, Tuple
 from bs4 import BeautifulSoup
+import re
 
 import urllib3
 from urllib3.poolmanager import PoolManager
@@ -114,6 +116,14 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     return (True, r)
 
 
+def NoneIfException(f: Function, *args):
+    try:
+        return f(*args)
+    except Exception as e:
+        # print(e)
+        return None
+
+
 if __name__ == "__main__":
     config = load_configs()
     if config is None:
@@ -138,9 +148,6 @@ if __name__ == "__main__":
     url = gen_link(r.geturl(), next_link_part)
     print(url)
     r = http.request('GET', url, headers=headers)
-    # DEBUG
-    with open("temp.html", 'w') as f:
-        f.write(r.data.decode())
     if r.status != 200:
         print(r.status)
         exit()  # TODO
@@ -152,7 +159,79 @@ if __name__ == "__main__":
         class_="displaytable").tbody.find_all("tr")
 
     # Filter
-    turmas_table_rows = [[i for i in row if i != "\n"]
-                         for row in turmas_table_rows]
+    class Disciplina():
+        numero: str
+        nome: str
+        semeste: str
+        href: str
+        url: str
 
-    print(turmas_table_rows)
+        @staticmethod
+        def fromBSTableList(elems: List):
+            d = Disciplina()
+
+            d.numero = NoneIfException(lambda e: e.text, elems[0])
+            d.nome = NoneIfException(lambda e: e.span.text, elems[1])
+            if d.nome is None:
+                d.nome = NoneIfException(lambda e: e.text, elems[1])
+            d.semeste = NoneIfException(lambda e: e.text, elems[2])
+            d.href = NoneIfException(lambda e: e.a["href"], elems[6])
+
+            return d
+
+        def __repr__(self) -> str:
+            return "{} {} {} {}".format(
+                self.semeste, self.numero, self.nome, self.url
+            )
+    disciplinas = [Disciplina.fromBSTableList([i for i in row if i != "\n"])
+                   for row in turmas_table_rows]
+
+    for d in disciplinas:
+        d.url = gen_link(infor_turmas_url,
+                         d.href) if d.href is not None else None
+
+    for d in [d for d in disciplinas if d.url != None]:
+        r = http.request('GET', d.url, headers=headers)
+        if r.status != 200:
+            print(f"GET {d.url} status {r.status}")
+            exit()
+        # print(f"Getting turmas for {d.nome}")
+
+        page = BeautifulSoup(r.data, 'html.parser')
+        form = page.find(id="listaInscricoesFormBean")
+        if form is None:
+            form = page.find(id="inscreverFormBean")
+        if form is None:
+            print("Something went wrong. Cant find form")
+            continue
+
+        formActionUrl = gen_link(infor_base_url, form['action'])
+        print(f"Form submit url: {formActionUrl}")
+        formSubmitButton = form.find('input', type="submit")
+        if formSubmitButton is None:
+            print("submit button not found")
+        else:
+            print(formSubmitButton)
+        zones = form.find_all(class_="zone")
+
+        for zone in zones:
+            zoneTitle = zone.find(class_="subtitle")
+            if zoneTitle is not None:
+                zoneTitle = zoneTitle.text.strip()
+                print(f"Zone title: {zoneTitle}")
+            else:
+                print("No zone title")
+            zoneContent = zone.find(class_="zonecontent")
+            zoneDispTable = zone.find(class_="displaytable")
+            if zoneDispTable is None:
+                text = re.sub(r'\s+', ' ', zoneContent.text)
+                print(text)
+                continue
+
+            zoneRows = zoneDispTable.find_all("tr")
+            for row in zoneRows:
+                zoneCols = row.find_all("td")
+                for col in zoneCols:
+                    text = re.sub(r'\s+', ' ', col.text)
+                    print(text, end="\t")
+                print("")
