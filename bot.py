@@ -151,5 +151,8 @@ if __name__ == "__main__":
     turmas_table_rows = turmas_list_form.find(
         class_="displaytable").tbody.find_all("tr")
 
-    for row in turmas_table_rows:
-        print(row.contents[3].text)
+    # Filter
+    turmas_table_rows = [[i for i in row if i != "\n"]
+                         for row in turmas_table_rows]
+
+    print(turmas_table_rows)
