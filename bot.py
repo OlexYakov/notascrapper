@@ -3,6 +3,7 @@ from pyclbr import Function
 from typing import Dict, List, Tuple
 from bs4 import BeautifulSoup
 import re
+import json
 
 import urllib3
 from urllib3.poolmanager import PoolManager
@@ -38,6 +39,8 @@ class Subject():
         d.name = NoneIfException(lambda e: e.span.text, elems[1])
         if d.name is None:
             d.name = NoneIfException(lambda e: e.text, elems[1])
+
+        d.name = d.name.split("*")[0].strip()
         d.semester = NoneIfException(lambda e: e.text, elems[2])
         d.href = NoneIfException(lambda e: e.a["href"], elems[6])
 
@@ -174,7 +177,7 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     return (True, r)
 
 
-def navidate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
+def navigate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     # Get list of classes
     r = http.request(
         'GET', infor_insc_turmas_url, headers=headers)
@@ -223,6 +226,75 @@ def NoneIfException(f: Function, *args):
         return None
 
 
+def gen_classes_configs(subjects: List[Subject]):
+    relevant_subs = [
+        "Teórico-Prática",
+        "Teórico-Práticas",
+        "Práticas-Laboratoriais"
+    ]
+
+    turmas = {}
+
+    for d in [d for d in subjects if d.url != None]:
+
+        turmas[d.name] = {}
+
+        r = http.request('GET', d.url, headers=headers)
+        if r.status != 200:
+            print(f"GET {d.url} status {r.status}")
+            exit()
+
+        page = BeautifulSoup(r.data, 'html.parser')
+        form = page.find(id="listaInscricoesFormBean")
+        if form is None:
+            form = page.find(id="inscreverFormBean")
+        if form is None:
+            print("Something went wrong. Cant find form")
+            continue
+        # form = Form.fromBSForm(form)
+        form_url = gen_link(infor_base_url, form['action'])
+        form_submit_button = form.find('input', type="submit")
+        if form_submit_button is None:
+            print("submit button not found")
+        else:
+            print(form_submit_button)
+        zones = form.find_all(class_="zone")
+
+        for zone in zones:
+            zoneTitle = zone.find(class_="subtitle")
+            if zoneTitle is not None:
+                zoneTitle = zoneTitle.text.strip()
+                print(f"Zone title: {zoneTitle}")
+            else:
+                print("No zone title")
+            if zoneTitle not in relevant_subs:
+                continue
+
+            turmas[d.name][zoneTitle] = {"choise": "", "options": []}
+
+            zoneContent = zone.find(class_="zonecontent")
+            zoneDispTable = zone.find(class_="displaytable")
+            if zoneDispTable is None:
+                text = re.sub(r'\s+', ' ', zoneContent.text)
+                print(text)
+                continue
+
+            zoneRows = zoneDispTable.find_all("tr")
+            for row in zoneRows:
+                zoneCols = row.find_all("td")
+                # print("TP1" in map(lambda c: c.text, zoneCols))
+                if (len(zoneCols) > 0):
+                    turmas[d.name][zoneTitle]["options"].append(
+                        re.sub(r'\s+', ' ', zoneCols[0].text))
+                for col in zoneCols:
+                    text = re.sub(r'\s+', ' ', col.text)
+                    print(text, end="\t")
+                print("")
+
+    with open("turmas.json", "w") as f:
+        json.dump(turmas, f)
+
+
 if __name__ == "__main__":
     config = load_configs()
     if config is None:
@@ -235,7 +307,7 @@ if __name__ == "__main__":
         exit()
     print("Login successfull")
 
-    success, res = navidate_subjects_page(http)
+    success, res = navigate_subjects_page(http)
     if not success:
         print("Could not reach the LEI subjects page")
         exit()
@@ -243,47 +315,4 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    for d in [d for d in subjects if d.url != None]:
-        r = http.request('GET', d.url, headers=headers)
-        if r.status != 200:
-            print(f"GET {d.url} status {r.status}")
-            exit()
-        # print(f"Getting turmas for {d.nome}")
-
-        page = BeautifulSoup(r.data, 'html.parser')
-        form = page.find(id="listaInscricoesFormBean")
-        if form is None:
-            form = page.find(id="inscreverFormBean")
-        if form is None:
-            print("Something went wrong. Cant find form")
-            continue
-        # form = Form.fromBSForm(form)
-
-        formSubmitButton = form.find('input', type="submit")
-        if formSubmitButton is None:
-            print("submit button not found")
-        else:
-            print(formSubmitButton)
-        zones = form.find_all(class_="zone")
-
-        for zone in zones:
-            zoneTitle = zone.find(class_="subtitle")
-            if zoneTitle is not None:
-                zoneTitle = zoneTitle.text.strip()
-                print(f"Zone title: {zoneTitle}")
-            else:
-                print("No zone title")
-            zoneContent = zone.find(class_="zonecontent")
-            zoneDispTable = zone.find(class_="displaytable")
-            if zoneDispTable is None:
-                text = re.sub(r'\s+', ' ', zoneContent.text)
-                print(text)
-                continue
-
-            zoneRows = zoneDispTable.find_all("tr")
-            for row in zoneRows:
-                zoneCols = row.find_all("td")
-                for col in zoneCols:
-                    text = re.sub(r'\s+', ' ', col.text)
-                    print(text, end="\t")
-                print("")
+    gen_classes_configs(subjects)
