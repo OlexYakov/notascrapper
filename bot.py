@@ -1,6 +1,6 @@
 import configparser
 from pyclbr import Function
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 from bs4 import BeautifulSoup
 import re
 
@@ -11,10 +11,68 @@ from urllib3.response import HTTPResponse
 config = None
 infor_base_url = "https://inforestudante.uc.pt"
 infor_login_url = infor_base_url+"/nonio/security/login.do"
-infor_turmas_url = infor_base_url + \
+infor_insc_turmas_url = infor_base_url + "/nonio/inscturmas/init.do"
+infor_subjects_url = infor_base_url + \
     "/nonio/inscturmas/listaInscricoes.do?args=5189681149284684"
 infor_pautas_url = infor_base_url+"/nonio/pautas/pesquisaPautas.do"
+infor_init_url = infor_base_url+"/security/init.do"
 headers = {}
+
+
+class Subject():
+    '''
+    Helper class for holding data for each subject
+    '''
+    number: str
+    name: str
+    semester: str
+    href: str
+    url: str
+
+    @staticmethod
+    def fromBSTableList(elems: List):
+        d = Subject()
+
+        d.number = NoneIfException(lambda e: e.text, elems[0])
+        d.name = NoneIfException(lambda e: e.span.text, elems[1])
+        if d.name is None:
+            d.name = NoneIfException(lambda e: e.text, elems[1])
+        d.semester = NoneIfException(lambda e: e.text, elems[2])
+        d.href = NoneIfException(lambda e: e.a["href"], elems[6])
+
+        return d
+
+    def __repr__(self) -> str:
+        return "{} {} {} {}".format(
+            self.semester, self.number, self.name, self.url
+        )
+
+
+class Form():
+    id: str
+    action_url: str
+    inputs: Dict = {}
+
+    @staticmethod
+    def fromBSForm(form: BeautifulSoup):
+        irrelevant_inputs = ['visibilidade',
+                             'org.apache.struts.taglib.html.CANCEL']
+        f = Form()
+        f.id = form["id"]
+        f.action_url = gen_link(infor_base_url, form["action"])
+        inputs = form.find_all("input")
+        for i in inputs:
+            if i['name'] in irrelevant_inputs:
+                continue
+            if i['name'] not in f.inputs:
+                f.inputs[i['name']] = [i.attrs]
+            else:
+                f.inputs[i['name']].append(i.attrs)
+
+        return f
+
+    def __repr__(self) -> str:
+        return f"{self.id}\t{self.action_url}\t{self.inputs}"
 
 
 def gen_link(path: str, dest: str) -> str:
@@ -116,6 +174,47 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     return (True, r)
 
 
+def navidate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
+    # Get list of classes
+    r = http.request(
+        'GET', infor_insc_turmas_url, headers=headers)
+    if r.status != 200:
+        print(r.status)
+        return False, None
+    page = BeautifulSoup(r.data, 'html.parser')
+    # TODO avisar caso LEI não se a primeira
+    next_link_part = page.find(id="link_0").a["href"]
+    url = gen_link(r.geturl(), next_link_part)
+    r = http.request('GET', url, headers=headers)
+    if r.status != 200:
+        print(r.status)
+        return False, None
+
+    return True, r
+
+
+def extract_subjects(res: HTTPResponse) -> List[Subject]:
+    '''
+    Extracts the subjects from the http response containing the 'listaInscricoesFormBean'.
+    Every subject has a url property, in wich the classes (Theory and Practical) can be found.
+    '''
+    page = BeautifulSoup(res.data, 'html.parser')
+    subjects_form = page.find(id="listaInscricoesFormBean")
+    if subjects_form is None:
+        raise Exception('Cant find the subjects list')
+    subjects_table_rows = subjects_form.find(
+        class_="displaytable").tbody.find_all("tr")
+
+    # Filter
+
+    subjects = [Subject.fromBSTableList([i for i in row if i != "\n"])
+                for row in subjects_table_rows]
+    for sub in subjects:
+        sub.url = gen_link(infor_subjects_url,
+                           sub.href) if sub.href is not None else None
+    return subjects
+
+
 def NoneIfException(f: Function, *args):
     try:
         return f(*args)
@@ -136,61 +235,15 @@ if __name__ == "__main__":
         exit()
     print("Login successfull")
 
-    # Get list of classes
-    r = http.request(
-        'GET', "https://inforestudante.uc.pt/nonio/inscturmas/init.do", headers=headers)
-    if r.status != 200:
-        print(r.status)
-        exit()  # TODO
-    page = BeautifulSoup(r.data, 'html.parser')
-    # TODO avisar caso LEI não se a primeira
-    next_link_part = page.find(id="link_0").a["href"]
-    url = gen_link(r.geturl(), next_link_part)
-    print(url)
-    r = http.request('GET', url, headers=headers)
-    if r.status != 200:
-        print(r.status)
-        exit()  # TODO
-    page = BeautifulSoup(r.data, 'html.parser')
+    success, res = navidate_subjects_page(http)
+    if not success:
+        print("Could not reach the LEI subjects page")
+        exit()
+    print("Inside classes page")
 
-    turmas_list_form = page.find(id="listaInscricoesFormBean")
+    subjects = extract_subjects(res)
 
-    turmas_table_rows = turmas_list_form.find(
-        class_="displaytable").tbody.find_all("tr")
-
-    # Filter
-    class Disciplina():
-        numero: str
-        nome: str
-        semeste: str
-        href: str
-        url: str
-
-        @staticmethod
-        def fromBSTableList(elems: List):
-            d = Disciplina()
-
-            d.numero = NoneIfException(lambda e: e.text, elems[0])
-            d.nome = NoneIfException(lambda e: e.span.text, elems[1])
-            if d.nome is None:
-                d.nome = NoneIfException(lambda e: e.text, elems[1])
-            d.semeste = NoneIfException(lambda e: e.text, elems[2])
-            d.href = NoneIfException(lambda e: e.a["href"], elems[6])
-
-            return d
-
-        def __repr__(self) -> str:
-            return "{} {} {} {}".format(
-                self.semeste, self.numero, self.nome, self.url
-            )
-    disciplinas = [Disciplina.fromBSTableList([i for i in row if i != "\n"])
-                   for row in turmas_table_rows]
-
-    for d in disciplinas:
-        d.url = gen_link(infor_turmas_url,
-                         d.href) if d.href is not None else None
-
-    for d in [d for d in disciplinas if d.url != None]:
+    for d in [d for d in subjects if d.url != None]:
         r = http.request('GET', d.url, headers=headers)
         if r.status != 200:
             print(f"GET {d.url} status {r.status}")
@@ -204,9 +257,7 @@ if __name__ == "__main__":
         if form is None:
             print("Something went wrong. Cant find form")
             continue
-
-        formActionUrl = gen_link(infor_base_url, form['action'])
-        print(f"Form submit url: {formActionUrl}")
+        # form = Form.fromBSForm(form)
         formSubmitButton = form.find('input', type="submit")
         if formSubmitButton is None:
             print("submit button not found")
