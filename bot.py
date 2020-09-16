@@ -9,6 +9,7 @@ from urllib3.poolmanager import PoolManager
 from urllib3.response import HTTPResponse
 
 config = None
+configs_file_name = 'configs.ini'
 infor_base_url = "https://inforestudante.uc.pt"
 infor_login_url = infor_base_url+"/nonio/security/login.do"
 infor_insc_turmas_url = infor_base_url + "/nonio/inscturmas/init.do"
@@ -91,8 +92,7 @@ def gen_link(path: str, dest: str) -> str:
 
 def load_configs() -> configparser.ConfigParser:
     '''Load configurations from the default configs.ini file'''
-
-    configs_file_name = 'configs.ini'
+    global configs_file_name
     config = configparser.ConfigParser()
     defaults = {
         'DEFAULT': {
@@ -258,6 +258,7 @@ if __name__ == "__main__":
             print("Something went wrong. Cant find form")
             continue
         # form = Form.fromBSForm(form)
+
         formSubmitButton = form.find('input', type="submit")
         if formSubmitButton is None:
             print("submit button not found")
