@@ -189,7 +189,7 @@ def navigate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     page = BeautifulSoup(r.data, 'html.parser')
     # TODO avisar caso LEI não se a primeira
     next_link_part = page.find(id="link_0").a["href"]
-    url = gen_link(r.geturl(), next_link_part)
+    url = gen_link(infor_insc_turmas_url, next_link_part)
     r = http.request('GET', url, headers=headers)
     if r.status != 200:
         print(r.status)
@@ -403,5 +403,5 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    gen_classes_configs(subjects)
-    # do_register(subjects, http)
+    # gen_classes_configs(subjects)
+    do_register(subjects, http)

@@ -1,7 +1,7 @@
 {
     "Empreendedorismo e Gest\u00e3o de Empresas": {
         "Te\u00f3rico-Pr\u00e1ticas": {
-            "choise": "TP1",
+            "choise": "TP2",
             "options": [
                 "TP1",
                 "TP2"
@@ -30,7 +30,7 @@
     },
     "Integra\u00e7\u00e3o de Sistemas": {
         "Pr\u00e1ticas-Laboratoriais": {
-            "choise": "ESCOLHE UMA OPCAO",
+            "choise": "PL2",
             "options": [
                 "PL1",
                 "PL2"
@@ -39,7 +39,7 @@
     },
     "Intera\u00e7\u00e3o Humano-Computador": {
         "Pr\u00e1ticas-Laboratoriais": {
-            "choise": "ESCOLHE UMA OPCAO",
+            "choise": "PL1",
             "options": [
                 "PL1",
                 "PL2",
@@ -52,7 +52,7 @@
     },
     "Metodologias Experimentais em Inform\u00e1tica": {
         "Pr\u00e1ticas-Laboratoriais": {
-            "choise": "ESCOLHE UMA OPCAO",
+            "choise": "PL2",
             "options": [
                 "PL1",
                 "PL2",
