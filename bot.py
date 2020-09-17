@@ -1,11 +1,13 @@
 import configparser
 from pyclbr import Function
+from re import sub
 from typing import Dict, List, Tuple
 from bs4 import BeautifulSoup
 import re
 import json
 
 import urllib3
+from urllib3.connectionpool import HTTPConnectionPool
 from urllib3.poolmanager import PoolManager
 from urllib3.response import HTTPResponse
 
@@ -270,7 +272,8 @@ def gen_classes_configs(subjects: List[Subject]):
             if zoneTitle not in relevant_subs:
                 continue
 
-            turmas[d.name][zoneTitle] = {"choise": "", "options": []}
+            turmas[d.name][zoneTitle] = {
+                "choise": "ESCOLHE UMA OPCAO", "options": []}
 
             zoneContent = zone.find(class_="zonecontent")
             zoneDispTable = zone.find(class_="displaytable")
@@ -295,12 +298,97 @@ def gen_classes_configs(subjects: List[Subject]):
         json.dump(turmas, f)
 
 
+def do_register(subjects: List[Subject], http: PoolManager):
+    def turma_tag(bs: BeautifulSoup) -> bool:
+        return bs.has_attr(
+            "input") and not bs['name'] == 'visibilidade' and not bs['name'] == "org.apache.struts.taglib.html.CANCE"
+
+    relevant_subs = [
+        "Teórico-Prática",
+        "Teórico-Práticas",
+        "Práticas-Laboratoriais"
+    ]
+    try:
+        turmas = json.load(open("turmas.json"))
+    except FileNotFoundError:
+        print("turmas.json file not found. Run gen_classes_config first")
+        # TODO do you want to run it now?
+        return
+    except:
+        return
+
+    for d in [d for d in subjects if d.url != None]:
+        fields = {}
+        r = http.request('GET', d.url, headers=headers)
+        if r.status != 200:
+            print(f"GET {d.url} status {r.status}")
+            exit()
+
+        page = BeautifulSoup(r.data, 'html.parser')
+        form = page.find(id="listaInscricoesFormBean")
+        if form is None:
+            form = page.find(id="inscreverFormBean")
+        if form is None:
+            print("Something went wrong. Cant find form")
+            continue
+        # form = Form.fromBSForm(form)
+        form_url = infor_base_url + form['action']
+        form_submit_button = form.find('input', type="submit")
+        if form_submit_button is None:
+            print("submit button not found")
+        else:
+            print(form_submit_button)
+        zones = form.find_all(class_="zone")
+
+        for zone in zones:
+            zoneTitle = zone.find(class_="subtitle")
+            if zoneTitle is not None:
+                zoneTitle = zoneTitle.text.strip()
+                print(f"Zone title: {zoneTitle}")
+            else:
+                print("No zone title")
+            if zoneTitle not in relevant_subs:
+                continue
+
+            zoneContent = zone.find(class_="zonecontent")
+            zoneDispTable = zone.find(class_="displaytable")
+            if zoneDispTable is None:
+                text = re.sub(r'\s+', ' ', zoneContent.text)
+                print(text)
+                continue
+
+            zoneRows = zoneDispTable.find_all("tr")
+            choise = turmas[d.name][zoneTitle]["choise"]
+            options = list(filter(lambda c: choise in c.text, zoneRows))
+            if len(options) == 0:
+                print(f"No option {choise} for {zoneTitle} in {d.name}")
+                continue
+
+            option = options[0]
+
+            inp = option.find(turma_tag)
+            if inp is None:
+                print("Input to choose grade not found")
+                continue
+
+            fields[inp['name']] = inp['value']
+
+        if len(form) != 0:
+            r = http.request('POST', form_url, fields=fields,
+                             headers=headers, retries=20)
+
+            if r.status != 200:
+                print(
+                    f"Register to {d.name} with fields {form} failed with status {r.status}")
+
+
 if __name__ == "__main__":
     config = load_configs()
     if config is None:
         exit()
 
     http = urllib3.PoolManager()
+
     success, res = login(http)
     if not success:
         print("Login attempt failed")
@@ -316,3 +404,4 @@ if __name__ == "__main__":
     subjects = extract_subjects(res)
 
     gen_classes_configs(subjects)
+    # do_register(subjects, http)
