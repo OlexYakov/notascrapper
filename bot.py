@@ -5,11 +5,10 @@ from typing import Dict, List, Tuple
 from bs4 import BeautifulSoup
 import re
 import json
+import requests
+from requests import Response
+from requests.sessions import Session
 
-import urllib3
-from urllib3.connectionpool import HTTPConnectionPool
-from urllib3.poolmanager import PoolManager
-from urllib3.response import HTTPResponse
 
 config = None
 configs_file_name = 'configs.ini'
@@ -142,14 +141,14 @@ def load_configs() -> configparser.ConfigParser:
         return None
 
 
-def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
+def login(session: Session) -> Tuple[bool, Response]:
     # GET infor page
-    r = http.request('GET', infor_login_url, retries=20)
-    print(f"GET {infor_login_url}, status: {r.status}")
-    if r.status != 200:
+    r = session.get(infor_login_url)
+    print(f"GET {infor_login_url}, status: {r.status_code}")
+    if r.status_code != 200:
         return (False, r)
 
-    page = BeautifulSoup(r.data, 'html.parser')
+    page = BeautifulSoup(r.text, 'html.parser')
     cookie = r.headers["Set-Cookie"].split()[0]
     global headers
     headers["Cookie"] = cookie
@@ -163,14 +162,14 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     form_data = {
         "username": config.defaults()['username'],
         "password": config.defaults()['password']}
-    r = http.request('POST', login_url, fields=form_data, retries=20)
+    r = session.post(login_url, data=form_data)
 
-    print(f"POST Login request status: {r.status}")
-    if r.status != 200:
+    print(f"POST Login request status: {r.status_code}")
+    if r.status_code != 200:
         return (False, r)
 
     # Check if correctly authenticated
-    page = BeautifulSoup(r.data, 'html.parser')
+    page = BeautifulSoup(r.text, 'html.parser')
     errors_div = page.find(id="div_erros_preenchimento_formulario")
     if errors_div is not None:
         error_text = errors_div.div.ul.li.text
@@ -179,31 +178,30 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     return (True, r)
 
 
-def navigate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
+def navigate_subjects_page(session: Session) -> Tuple[bool, Response]:
     # Get list of classes
-    r = http.request(
-        'GET', infor_insc_turmas_url, headers=headers, retries=20)
-    if r.status != 200:
-        print(r.status)
+    r = session.get(infor_insc_turmas_url, headers=headers)
+    if r.status_code != 200:
+        print(r.status_code)
         return False, None
-    page = BeautifulSoup(r.data, 'html.parser')
+    page = BeautifulSoup(r.text, 'html.parser')
     # TODO avisar caso LEI não se a primeira
     next_link_part = page.find(id="link_0").a["href"]
     url = gen_link(infor_insc_turmas_url, next_link_part)
-    r = http.request('GET', url, headers=headers, retries=20)
-    if r.status != 200:
-        print(r.status)
+    r = session.post(url, headers=headers)
+    if r.status_code != 200:
+        print(r.status_code)
         return False, None
 
     return True, r
 
 
-def extract_subjects(res: HTTPResponse) -> List[Subject]:
+def extract_subjects(res: Response) -> List[Subject]:
     '''
     Extracts the subjects from the http response containing the 'listaInscricoesFormBean'.
     Every subject has a url property, in wich the classes (Theory and Practical) can be found.
     '''
-    page = BeautifulSoup(res.data, 'html.parser')
+    page = BeautifulSoup(res.text, 'html.parser')
     subjects_form = page.find(id="listaInscricoesFormBean")
     if subjects_form is None:
         raise Exception('Cant find the subjects list')
@@ -228,7 +226,7 @@ def NoneIfException(f: Function, *args):
         return None
 
 
-def gen_classes_configs(subjects: List[Subject]):
+def gen_classes_configs(subjects: List[Subject], session: Session):
     relevant_subs = [
         "Teórico-Prática",
         "Teórico-Práticas",
@@ -241,12 +239,12 @@ def gen_classes_configs(subjects: List[Subject]):
 
         turmas[d.name] = {}
 
-        r = http.request('GET', d.url, headers=headers, retries=20)
-        if r.status != 200:
-            print(f"GET {d.url} status {r.status}")
+        r = session.get(d.url, headers=headers)
+        if r.status_code != 200:
+            print(f"GET {d.url} status {r.status_code}")
             exit()
 
-        page = BeautifulSoup(r.data, 'html.parser')
+        page = BeautifulSoup(r.text, 'html.parser')
         form = page.find(id="listaInscricoesFormBean")
         if form is None:
             form = page.find(id="inscreverFormBean")
@@ -298,7 +296,7 @@ def gen_classes_configs(subjects: List[Subject]):
         json.dump(turmas, f)
 
 
-def do_register(subjects: List[Subject], http: PoolManager):
+def do_register(subjects: List[Subject], session: Session):
     def turma_tag(bs: BeautifulSoup) -> bool:
         return bs.name == 'input' and not bs['name'] == 'visibilidade' and not bs['name'] == "org.apache.struts.taglib.html.CANCE"
 
@@ -318,12 +316,12 @@ def do_register(subjects: List[Subject], http: PoolManager):
 
     for d in [d for d in subjects if d.url != None]:
         fields = {}
-        r = http.request('GET', d.url, headers=headers, retries=20)
-        if r.status != 200:
-            print(f"GET {d.url} status {r.status}")
+        r = session.get(d.url, headers=headers)
+        if r.status_code != 200:
+            print(f"GET {d.url} status {r.status_code}")
             exit()
 
-        page = BeautifulSoup(r.data, 'html.parser')
+        page = BeautifulSoup(r.text, 'html.parser')
         form = page.find(id="listaInscricoesFormBean")
         if form is None:
             form = page.find(id="inscreverFormBean")
@@ -374,12 +372,12 @@ def do_register(subjects: List[Subject], http: PoolManager):
 
         if len(fields) != 0:
             print(f"TRY: POST {form_url} with fields: {fields}")
-            r = http.request('POST', form_url, fields=fields,
-                             headers=headers, retries=20)
+            # r = session.post(form_url, data=fields,
+            #                   headers=headers )
 
-            if r.status != 200:
-                print(
-                    f"Register to {d.name} with fields {form} failed with status {r.status}")
+            # if r.status_code != 200:
+            #     print(
+            #         f"Register to {d.name} with fields {form} failed with status {r.status_code}")
             # TODO check if url redirected to https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do
 
 
@@ -388,15 +386,15 @@ if __name__ == "__main__":
     if config is None:
         exit()
 
-    http = urllib3.PoolManager()
+    session = requests.Session()
 
-    success, res = login(http)
+    success, res = login(session)
     if not success:
         print("Login attempt failed")
         exit()
     print("Login successfull")
 
-    success, res = navigate_subjects_page(http)
+    success, res = navigate_subjects_page(session)
     if not success:
         print("Could not reach the LEI subjects page")
         exit()
@@ -404,5 +402,5 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    # gen_classes_configs(subjects)
-    do_register(subjects, http)
+    # gen_classes_configs(subjects,session)
+    do_register(subjects, session)
