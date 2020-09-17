@@ -144,7 +144,7 @@ def load_configs() -> configparser.ConfigParser:
 
 def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     # GET infor page
-    r = http.request('GET', infor_login_url)
+    r = http.request('GET', infor_login_url, retries=20)
     print(f"GET {infor_login_url}, status: {r.status}")
     if r.status != 200:
         return (False, r)
@@ -163,7 +163,7 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     form_data = {
         "username": config.defaults()['username'],
         "password": config.defaults()['password']}
-    r = http.request('POST', login_url, fields=form_data, retries=5)
+    r = http.request('POST', login_url, fields=form_data, retries=20)
 
     print(f"POST Login request status: {r.status}")
     if r.status != 200:
@@ -182,7 +182,7 @@ def login(http: PoolManager) -> Tuple[bool, HTTPResponse]:
 def navigate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     # Get list of classes
     r = http.request(
-        'GET', infor_insc_turmas_url, headers=headers)
+        'GET', infor_insc_turmas_url, headers=headers, retries=20)
     if r.status != 200:
         print(r.status)
         return False, None
@@ -190,7 +190,7 @@ def navigate_subjects_page(http: PoolManager) -> Tuple[bool, HTTPResponse]:
     # TODO avisar caso LEI não se a primeira
     next_link_part = page.find(id="link_0").a["href"]
     url = gen_link(infor_insc_turmas_url, next_link_part)
-    r = http.request('GET', url, headers=headers)
+    r = http.request('GET', url, headers=headers, retries=20)
     if r.status != 200:
         print(r.status)
         return False, None
@@ -241,7 +241,7 @@ def gen_classes_configs(subjects: List[Subject]):
 
         turmas[d.name] = {}
 
-        r = http.request('GET', d.url, headers=headers)
+        r = http.request('GET', d.url, headers=headers, retries=20)
         if r.status != 200:
             print(f"GET {d.url} status {r.status}")
             exit()
@@ -300,8 +300,7 @@ def gen_classes_configs(subjects: List[Subject]):
 
 def do_register(subjects: List[Subject], http: PoolManager):
     def turma_tag(bs: BeautifulSoup) -> bool:
-        return bs.has_attr(
-            "input") and not bs['name'] == 'visibilidade' and not bs['name'] == "org.apache.struts.taglib.html.CANCE"
+        return bs.name == 'input' and not bs['name'] == 'visibilidade' and not bs['name'] == "org.apache.struts.taglib.html.CANCE"
 
     relevant_subs = [
         "Teórico-Prática",
@@ -319,7 +318,7 @@ def do_register(subjects: List[Subject], http: PoolManager):
 
     for d in [d for d in subjects if d.url != None]:
         fields = {}
-        r = http.request('GET', d.url, headers=headers)
+        r = http.request('GET', d.url, headers=headers, retries=20)
         if r.status != 200:
             print(f"GET {d.url} status {r.status}")
             exit()
@@ -373,13 +372,13 @@ def do_register(subjects: List[Subject], http: PoolManager):
 
             fields[inp['name']] = inp['value']
 
-        if len(form) != 0:
-            r = http.request('POST', form_url, fields=fields,
-                             headers=headers, retries=20)
+        # if len(form) != 0:
+        #     r = http.request('POST', form_url, fields=fields,
+        #                      headers=headers, retries=20)
 
-            if r.status != 200:
-                print(
-                    f"Register to {d.name} with fields {form} failed with status {r.status}")
+        #     if r.status != 200:
+        #         print(
+        #             f"Register to {d.name} with fields {form} failed with status {r.status}")
 
 
 if __name__ == "__main__":
