@@ -332,22 +332,21 @@ def do_register(subjects: List[Subject], http: PoolManager):
             continue
         # form = Form.fromBSForm(form)
         form_url = infor_base_url + form['action']
-        form_submit_button = form.find('input', type="submit")
-        if form_submit_button is None:
-            print("submit button not found")
-        else:
-            print(form_submit_button)
+        # form_submit_button = form.find('input', type="submit")
+        # if form_submit_button is None:
+        #     print("submit button not found")
+        # else:
+        #     print(form_submit_button)
         zones = form.find_all(class_="zone")
 
         for zone in zones:
             zoneTitle = zone.find(class_="subtitle")
-            if zoneTitle is not None:
-                zoneTitle = zoneTitle.text.strip()
-                print(f"Zone title: {zoneTitle}")
-            else:
-                print("No zone title")
+            if zoneTitle is None:
+                continue
+            zoneTitle = zoneTitle.text.strip()
             if zoneTitle not in relevant_subs:
                 continue
+            print(f"Zone title: {d.name} - {zoneTitle}")
 
             zoneContent = zone.find(class_="zonecontent")
             zoneDispTable = zone.find(class_="displaytable")
@@ -367,18 +366,21 @@ def do_register(subjects: List[Subject], http: PoolManager):
 
             inp = option.find(turma_tag)
             if inp is None:
-                print("Input to choose grade not found")
+                print(
+                    f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
                 continue
 
             fields[inp['name']] = inp['value']
 
-        # if len(form) != 0:
-        #     r = http.request('POST', form_url, fields=fields,
-        #                      headers=headers, retries=20)
+        if len(fields) != 0:
+            print(f"TRY: POST {form_url} with fields: {fields}")
+            r = http.request('POST', form_url, fields=fields,
+                             headers=headers, retries=20)
 
-        #     if r.status != 200:
-        #         print(
-        #             f"Register to {d.name} with fields {form} failed with status {r.status}")
+            if r.status != 200:
+                print(
+                    f"Register to {d.name} with fields {form} failed with status {r.status}")
+            # TODO check if url redirected to https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do
 
 
 if __name__ == "__main__":
