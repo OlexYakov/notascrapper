@@ -1,6 +1,8 @@
 import configparser
+import datetime
 from pyclbr import Function
-from re import sub
+from re import fullmatch, sub
+import time
 from typing import Dict, List, Tuple
 from bs4 import BeautifulSoup
 import re
@@ -10,15 +12,22 @@ from requests import Response
 from requests.sessions import Session
 import logging
 from time import sleep
+
 config = None
 configs_file_name = 'configs.ini'
+turmas_file_name = "turmas.json"
 infor_base_url = "https://inforestudante.uc.pt"
-infor_login_url = infor_base_url+"/nonio/security/login.do"
+infor_login_url = infor_base_url + "/nonio/security/login.do"
 infor_insc_turmas_url = infor_base_url + "/nonio/inscturmas/init.do"
 infor_subjects_url = infor_base_url + \
     "/nonio/inscturmas/listaInscricoes.do?args=5189681149284684"
-infor_pautas_url = infor_base_url+"/nonio/pautas/pesquisaPautas.do"
-infor_init_url = infor_base_url+"/security/init.do"
+infor_pautas_url = infor_base_url + "/nonio/pautas/pesquisaPautas.do"
+infor_init_url = infor_base_url + "/security/init.do"
+relevant_zone_titles = [
+    "Teórico-Prática",
+    "Teórico-Práticas",
+    "Práticas-Laboratoriais"
+]
 
 
 class Subject():
@@ -79,7 +88,25 @@ class Form():
         return f"{self.id}\t{self.action_url}\t{self.inputs}"
 
 
+def NoneIfException(f: Function, *args):
+    '''
+    Wrapper method. Returns None if an exception occurs.
+    '''
+    try:
+        return f(*args)
+    except Exception as e:
+        # logging.info(e)
+        return None
+
+
+def is_turma_tag(tag: BeautifulSoup) -> bool:
+    return tag.name == 'input' and \
+        not tag['name'] == 'visibilidade' and \
+        not tag['name'] == "org.apache.struts.taglib.html.CANCE"
+
+
 def gen_link(path: str, dest: str) -> str:
+    logging.debug(f"Concatinating {path} with {dest}")
     path = path.split("/")[:-1]
     dest = dest.split("/")
 
@@ -89,8 +116,9 @@ def gen_link(path: str, dest: str) -> str:
             path.pop(-1)
         else:
             path.append(elem)
-
-    return path[0]+"/"+"/".join(path[1:])
+    full_path = path[0] + "/" + "/".join(path[1:])
+    logging.debug(f"Result: {full_path}")
+    return full_path
 
 
 def load_configs() -> configparser.ConfigParser:
@@ -156,7 +184,7 @@ def login(session: Session) -> Tuple[bool, Response]:
     login_form = page.find(id="loginFormBean")
     action = login_form["action"]
 
-    login_url = infor_base_url+action
+    login_url = infor_base_url + action
 
     # POST login attempt
     form_data = {
@@ -218,46 +246,33 @@ def extract_subjects(res: Response) -> List[Subject]:
     return subjects
 
 
-def NoneIfException(f: Function, *args):
-    try:
-        return f(*args)
-    except Exception as e:
-        # logging.info(e)
-        return None
+def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
+    '''
+    Generates the configuration file to be used for chosing the class.
+    Returns True if no errors have occured, False otherwise.
+    '''
 
+    subjects_info = {}
 
-def gen_classes_configs(subjects: List[Subject], session: Session):
-    relevant_subs = [
-        "Teórico-Prática",
-        "Teórico-Práticas",
-        "Práticas-Laboratoriais"
-    ]
+    for subject in [s for s in subjects if s.url is not None]:
 
-    turmas = {}
+        info = {}
+        info["last-updated"] = str(datetime.datetime.now())
 
-    for d in [d for d in subjects if d.url != None]:
-
-        turmas[d.name] = {}
-
-        r = session.get(d.url)
+        r = session.get(subject.url)
         if r.status_code != 200:
-            logging.info(f"GET {d.url} status {r.status_code}")
-            exit()
+            logging.error(f"GET {subject.url} failed. Status: {r.status_code}")
+            return False
 
         page = BeautifulSoup(r.text, 'html.parser')
         form = page.find(id="listaInscricoesFormBean")
         if form is None:
             form = page.find(id="inscreverFormBean")
         if form is None:
-            logging.info("Something went wrong. Cant find form")
+            logging.error(
+                f"Something went wrong. Cant find the enrolement form for {subject.name}")
             continue
-        # form = Form.fromBSForm(form)
-        form_url = gen_link(infor_base_url, form['action'])
-        form_submit_button = form.find('input', type="submit")
-        if form_submit_button is None:
-            logging.info("submit button not found")
-        else:
-            logging.info(form_submit_button)
+
         zones = form.find_all(class_="zone")
 
         for zone in zones:
@@ -267,10 +282,10 @@ def gen_classes_configs(subjects: List[Subject], session: Session):
                 logging.info(f"Zone title: {zoneTitle}")
             else:
                 logging.info("No zone title")
-            if zoneTitle not in relevant_subs:
+            if zoneTitle not in relevant_zone_titles:
                 continue
 
-            turmas[d.name][zoneTitle] = {
+            info[zoneTitle] = {
                 "choise": "ESCOLHE UMA OPCAO", "options": []}
 
             zoneContent = zone.find(class_="zonecontent")
@@ -285,37 +300,29 @@ def gen_classes_configs(subjects: List[Subject], session: Session):
                 zoneCols = row.find_all("td")
                 # logging.info("TP1" in map(lambda c: c.text, zoneCols))
                 if (len(zoneCols) > 0):
-                    turmas[d.name][zoneTitle]["options"].append(
+                    info[zoneTitle]["options"].append(
                         re.sub(r'\s+', ' ', zoneCols[0].text))
                 for col in zoneCols:
                     text = re.sub(r'\s+', ' ', col.text)
-                    logging.info(text, end="\t")
-                logging.info("")
-
-    with open("turmas.json", "w") as f:
-        json.dump(turmas, f)
+                    print(text, end="\t")
+                print("")
+        subjects_info[subject.name] = info
+    with open(turmas_file_name, "w") as f:
+        json.dump(subjects_info, f, sort_keys=True, indent=4)
 
 
 def do_register(subjects: List[Subject], session: Session):
-    def turma_tag(bs: BeautifulSoup) -> bool:
-        return bs.name == 'input' and not bs['name'] == 'visibilidade' and not bs['name'] == "org.apache.struts.taglib.html.CANCE"
-
-    relevant_subs = [
-        "Teórico-Prática",
-        "Teórico-Práticas",
-        "Práticas-Laboratoriais"
-    ]
     try:
-        turmas = json.load(open("turmas.json"))
+        turmas = json.load(open(turmas_file_name))
     except FileNotFoundError:
         logging.info(
-            "turmas.json file not found. Run gen_classes_config first")
+            "turmas_file_name file not found. Run gen_classes_config first")
         # TODO do you want to run it now?
         return
-    except:
+    except BaseException:
         return
 
-    for d in [d for d in subjects if d.url != None]:
+    for d in [d for d in subjects if d.url is not None]:
         fields = {}
         r = session.get(d.url)
         if r.status_code != 200:
@@ -343,7 +350,7 @@ def do_register(subjects: List[Subject], session: Session):
             if zoneTitle is None:
                 continue
             zoneTitle = zoneTitle.text.strip()
-            if zoneTitle not in relevant_subs:
+            if zoneTitle not in relevant_zone_titles:
                 continue
             logging.info(f"Zone title: {d.name} - {zoneTitle}")
 
@@ -363,7 +370,7 @@ def do_register(subjects: List[Subject], session: Session):
 
             option = options[0]
 
-            inp = option.find(turma_tag)
+            inp = option.find(is_turma_tag)
             if inp is None:
                 logging.info(
                     f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
@@ -378,18 +385,12 @@ def do_register(subjects: List[Subject], session: Session):
             # if r.status_code != 200:
             #     logging.info(
             #         f"Register to {d.name} with fields {form} failed with status {r.status_code}")
-            # TODO check if url redirected to https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do
+            # TODO check if url redirected to
+            # https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do
 
 
 def class_sniper(subject: Subject, turma: str, session: Session, time=10):
-    def turma_tag(bs: BeautifulSoup) -> bool:
-        return bs.name == 'input' and not bs['name'] == 'visibilidade' and not bs['name'] == "org.apache.struts.taglib.html.CANCE"
 
-    relevant_subs = [
-        "Teórico-Prática",
-        "Teórico-Práticas",
-        "Práticas-Laboratoriais"
-    ]
     fields = {}
     logging.info(
         f"Begining to snipe class {turma} for {subject.name} with {time} second intervals")
@@ -420,7 +421,7 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
         if zoneTitle is None:
             continue
         zoneTitle = zoneTitle.text.strip()
-        if zoneTitle not in relevant_subs:
+        if zoneTitle not in relevant_zone_titles:
             continue
         logging.info(f"Zone title: {subject.name} - {zoneTitle}")
 
@@ -441,7 +442,7 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
 
         option = options[0]
 
-        inp = option.find(turma_tag)
+        inp = option.find(is_turma_tag)
         if inp is None:
             logging.info(
                 f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
@@ -474,6 +475,10 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
         sleep(time)
 
 
+def log_status(r: Response, *args, **kwargs):
+    logging.info(f"{r.request.method} {r.status_code} - {r.url}")
+
+
 if __name__ == "__main__":
     config = load_configs()
     if config is None:
@@ -483,7 +488,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         datefmt="%H:%M:%S")
     session = requests.Session()
-
+    session.hooks['response'].append(log_status)
     success, res = login(session)
     if not success:
         logging.info("Login attempt failed")
@@ -498,9 +503,8 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    # gen_classes_configs(subjects,session)
+    gen_subject_configs(subjects, session)
     # do_register(subjects, session)
-    class_sniper(next(s for s in subjects if s.name ==
-                      "Interação Humano-Computador"),
-                 "PL1",
-                 session)
+    # IHC = next(s for s in subjects if s.name ==
+    #            "Interação Humano-Computador")
+    # class_sniper(IHC, "PL1", session)
