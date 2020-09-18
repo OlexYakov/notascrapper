@@ -246,6 +246,22 @@ def extract_subjects(res: Response) -> List[Subject]:
     return subjects
 
 
+def get_subject_form(subject: Subject) -> BeautifulSoup:
+    r = session.get(subject.url)
+    if r.status_code != 200:
+        return False
+
+    page = BeautifulSoup(r.text, 'html.parser')
+    form = page.find(id="listaInscricoesFormBean")
+    if form is None:
+        form = page.find(id="inscreverFormBean")
+    if form is None:
+        logging.error(
+            f"Something went wrong. Cant find the enrolement form for {subject.name}")
+        return None
+    return form
+
+
 def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
     '''
     Generates the configuration file to be used for chosing the class.
@@ -259,19 +275,7 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
         info = {}
         info["last-updated"] = str(datetime.datetime.now())
 
-        r = session.get(subject.url)
-        if r.status_code != 200:
-            logging.error(f"GET {subject.url} failed. Status: {r.status_code}")
-            return False
-
-        page = BeautifulSoup(r.text, 'html.parser')
-        form = page.find(id="listaInscricoesFormBean")
-        if form is None:
-            form = page.find(id="inscreverFormBean")
-        if form is None:
-            logging.error(
-                f"Something went wrong. Cant find the enrolement form for {subject.name}")
-            continue
+        form = get_subject_form(subject)
 
         zones = form.find_all(class_="zone")
 
@@ -298,14 +302,13 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
             zoneRows = zoneDispTable.find_all("tr")
             for row in zoneRows:
                 zoneCols = row.find_all("td")
-                # logging.info("TP1" in map(lambda c: c.text, zoneCols))
                 if (len(zoneCols) > 0):
                     info[zoneTitle]["options"].append(
                         re.sub(r'\s+', ' ', zoneCols[0].text))
-                for col in zoneCols:
-                    text = re.sub(r'\s+', ' ', col.text)
-                    print(text, end="\t")
-                print("")
+                row_text = "".join(re.sub(r'\s+', ' ', col.text)
+                                   for col in zoneCols)
+                logging.info(row_text)
+
         subjects_info[subject.name] = info
     with open(turmas_file_name, "w") as f:
         json.dump(subjects_info, f, sort_keys=True, indent=4)
@@ -316,33 +319,19 @@ def do_register(subjects: List[Subject], session: Session):
         turmas = json.load(open(turmas_file_name))
     except FileNotFoundError:
         logging.info(
-            "turmas_file_name file not found. Run gen_classes_config first")
-        # TODO do you want to run it now?
-        return
-    except BaseException:
-        return
+            "turmas file file not found. Running gen_subject_configs first")
+        gen_subject_configs(subjects, session)
+        return do_register(subjects, session)
+    except:
+        raise
 
-    for d in [d for d in subjects if d.url is not None]:
-        fields = {}
-        r = session.get(d.url)
-        if r.status_code != 200:
-            logging.info(f"GET {d.url} status {r.status_code}")
-            exit()
+    for subject in [s for s in subjects if s.url is not None]:
+        payload = {}
 
-        page = BeautifulSoup(r.text, 'html.parser')
-        form = page.find(id="listaInscricoesFormBean")
-        if form is None:
-            form = page.find(id="inscreverFormBean")
-        if form is None:
-            logging.info("Something went wrong. Cant find form")
-            continue
-        # form = Form.fromBSForm(form)
+        form = get_subject_form(subject)
+
         form_url = infor_base_url + form['action']
-        # form_submit_button = form.find('input', type="submit")
-        # if form_submit_button is None:
-        #     logging.info("submit button not found")
-        # else:
-        #     logging.info(form_submit_button)
+
         zones = form.find_all(class_="zone")
 
         for zone in zones:
@@ -352,7 +341,7 @@ def do_register(subjects: List[Subject], session: Session):
             zoneTitle = zoneTitle.text.strip()
             if zoneTitle not in relevant_zone_titles:
                 continue
-            logging.info(f"Zone title: {d.name} - {zoneTitle}")
+            logging.info(f"Zone title: {subject.name} - {zoneTitle}")
 
             zoneContent = zone.find(class_="zonecontent")
             zoneDispTable = zone.find(class_="displaytable")
@@ -362,10 +351,11 @@ def do_register(subjects: List[Subject], session: Session):
                 continue
 
             zoneRows = zoneDispTable.find_all("tr")
-            choise = turmas[d.name][zoneTitle]["choise"]
+            choise = turmas[subject.name][zoneTitle]["choise"]
             options = list(filter(lambda c: choise in c.text, zoneRows))
             if len(options) == 0:
-                logging.info(f"No option {choise} for {zoneTitle} in {d.name}")
+                logging.info(
+                    f"No option {choise} for {zoneTitle} in {subject.name}")
                 continue
 
             option = options[0]
@@ -376,10 +366,10 @@ def do_register(subjects: List[Subject], session: Session):
                     f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
                 continue
 
-            fields[inp['name']] = inp['value']
+            payload[inp['name']] = inp['value']
 
-        if len(fields) != 0:
-            logging.info(f"TRY: POST {form_url} with fields: {fields}")
+        if len(payload) != 0:
+            logging.info(f"TRY: POST {form_url} with fields: {payload}")
             # r = session.post(form_url, data=fields )
 
             # if r.status_code != 200:
@@ -391,29 +381,14 @@ def do_register(subjects: List[Subject], session: Session):
 
 def class_sniper(subject: Subject, turma: str, session: Session, time=10):
 
-    fields = {}
+    payload = {}
     logging.info(
         f"Begining to snipe class {turma} for {subject.name} with {time} second intervals")
-    r = session.get(subject.url)
-    if r.status_code != 200:
-        logging.error(
-            f"Recieved status code {r.status_code} while sniping. Reason:{r.reason}")
-        return
 
-    page = BeautifulSoup(r.text, 'html.parser')
-    form = page.find(id="listaInscricoesFormBean")
-    if form is None:
-        form = page.find(id="inscreverFormBean")
-    if form is None:
-        logging.info("Something went wrong. Cant find form")
-        return
-    # form = Form.fromBSForm(form)
+    form = get_subject_form(subject)
+    # TODO form_url inside form?
     form_url = infor_base_url + form['action']
-    # form_submit_button = form.find('input', type="submit")
-    # if form_submit_button is None:
-    #     logging.info("submit button not found")
-    # else:
-    #     logging.info(form_submit_button)
+
     zones = form.find_all(class_="zone")
 
     for zone in zones:
@@ -448,15 +423,15 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
                 f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
             # Extract input value from the horarios input
             value = option.find('input')['value']
-            fields["inscrever"] = value
+            payload["inscrever"] = value
         else:
             vagas = option.find_all('td')[-3].text
             logging.info(f"You're in luck, a turma ainda tem {vagas}")
-            fields[inp['name']] = inp['value']
+            payload[inp['name']] = inp['value']
         break
-    logging.info(f"Payload ready, fields to post: {fields}")
+    logging.info(f"Payload ready, fields to post: {payload}")
     while True:
-        r = session.post(form_url, data=fields)
+        r = session.post(form_url, data=payload)
         logging.info(f"Posted, res status code: {r.status_code}, url: {r.url}")
         if r.status_code != 200:
             return
