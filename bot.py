@@ -1,5 +1,6 @@
 import configparser
 import datetime
+from logging import log
 from pyclbr import Function
 from re import fullmatch, sub
 import time
@@ -110,7 +111,7 @@ def gen_link(path: str, dest: str) -> str:
     path = path.split("/")[:-1]
     dest = dest.split("/")
 
-    while len(dest) != 0:
+    while dest:
         elem = dest.pop(0)
         if elem == "..":
             path.pop(-1)
@@ -246,6 +247,25 @@ def extract_subjects(res: Response) -> List[Subject]:
     return subjects
 
 
+def extract_title_and_rows(zone: BeautifulSoup) -> Tuple[str, List[BeautifulSoup]]:
+    zone_title = zone.find(class_="subtitle")
+    if zone_title is not None:
+        zone_title = zone_title.text.strip()
+    if zone_title not in relevant_zone_titles:
+        return zone_title, None
+    logging.info(f"Zone title: {zone_title}")
+
+    zone_content = zone.find(class_="zonecontent")
+    zone_disp_table = zone.find(class_="displaytable")
+    if zone_disp_table is None:
+        text = re.sub(r'\s+', ' ', zone_content.text)
+        logging.info(f"Zone table not found. Inside text: {text}")
+        return zone_title, None
+
+    zone_rows = zone_disp_table.find_all("tr")
+    return zone_title, zone_rows
+
+
 def get_subject_form(subject: Subject) -> BeautifulSoup:
     r = session.get(subject.url)
     if r.status_code != 200:
@@ -262,6 +282,13 @@ def get_subject_form(subject: Subject) -> BeautifulSoup:
     return form
 
 
+def find_class_row(rows: List[BeautifulSoup], turma: str) -> BeautifulSoup:
+    options = list(filter(lambda c: turma in c.text, rows))
+    if not options:
+        return None
+    return options[0]
+
+
 def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
     '''
     Generates the configuration file to be used for chosing the class.
@@ -271,7 +298,7 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
     subjects_info = {}
 
     for subject in [s for s in subjects if s.url is not None]:
-
+        logging.info(f"Subject: {subject.name}")
         info = {}
         info["last-updated"] = str(datetime.datetime.now())
 
@@ -280,38 +307,24 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
         zones = form.find_all(class_="zone")
 
         for zone in zones:
-            zoneTitle = zone.find(class_="subtitle")
-            if zoneTitle is not None:
-                zoneTitle = zoneTitle.text.strip()
-                logging.info(f"Zone title: {zoneTitle}")
-            else:
-                logging.info("No zone title")
-            if zoneTitle not in relevant_zone_titles:
+            zone_title, zone_rows = extract_title_and_rows(zone)
+            if zone_title not in relevant_zone_titles:
                 continue
-
-            info[zoneTitle] = {
-                "choise": "ESCOLHE UMA OPCAO", "options": []}
-
-            zoneContent = zone.find(class_="zonecontent")
-            zoneDispTable = zone.find(class_="displaytable")
-            if zoneDispTable is None:
-                text = re.sub(r'\s+', ' ', zoneContent.text)
-                logging.info(text)
-                continue
-
-            zoneRows = zoneDispTable.find_all("tr")
-            for row in zoneRows:
-                zoneCols = row.find_all("td")
-                if (len(zoneCols) > 0):
-                    info[zoneTitle]["options"].append(
-                        re.sub(r'\s+', ' ', zoneCols[0].text))
-                row_text = "".join(re.sub(r'\s+', ' ', col.text)
-                                   for col in zoneCols)
-                logging.info(row_text)
+            info[zone_title] = {"want": "ESCOLHE UMA OPCAO", "options": []}
+            for row in zone_rows:
+                zone_cols = row.find_all("td")
+                if not zone_cols:
+                    continue
+                info[zone_title]["options"].append(
+                    re.sub(r'\s+', ' ', zone_cols[0].text))
+                row_text = "\t".join(re.sub(r'\s+', ' ', col.text)
+                                     for col in zone_cols)
+                logging.info("\t"+row_text)
 
         subjects_info[subject.name] = info
     with open(turmas_file_name, "w") as f:
         json.dump(subjects_info, f, sort_keys=True, indent=4)
+    return True
 
 
 def do_register(subjects: List[Subject], session: Session):
@@ -329,36 +342,21 @@ def do_register(subjects: List[Subject], session: Session):
         payload = {}
 
         form = get_subject_form(subject)
-
         form_url = infor_base_url + form['action']
 
         zones = form.find_all(class_="zone")
 
         for zone in zones:
-            zoneTitle = zone.find(class_="subtitle")
-            if zoneTitle is None:
-                continue
-            zoneTitle = zoneTitle.text.strip()
-            if zoneTitle not in relevant_zone_titles:
-                continue
-            logging.info(f"Zone title: {subject.name} - {zoneTitle}")
-
-            zoneContent = zone.find(class_="zonecontent")
-            zoneDispTable = zone.find(class_="displaytable")
-            if zoneDispTable is None:
-                text = re.sub(r'\s+', ' ', zoneContent.text)
-                logging.info(text)
+            zone_title, zone_rows = extract_title_and_rows(zone)
+            if zone_title not in relevant_zone_titles:
                 continue
 
-            zoneRows = zoneDispTable.find_all("tr")
-            choise = turmas[subject.name][zoneTitle]["choise"]
-            options = list(filter(lambda c: choise in c.text, zoneRows))
-            if len(options) == 0:
+            choise = turmas[subject.name][zone_title]["want"]
+            option = find_class_row(zone_rows, choise)
+            if option is None:
                 logging.info(
-                    f"No option {choise} for {zoneTitle} in {subject.name}")
+                    f"No option {choise} for {zone_title} in {subject.name}")
                 continue
-
-            option = options[0]
 
             inp = option.find(is_turma_tag)
             if inp is None:
@@ -368,7 +366,7 @@ def do_register(subjects: List[Subject], session: Session):
 
             payload[inp['name']] = inp['value']
 
-        if len(payload) != 0:
+        if payload:
             logging.info(f"TRY: POST {form_url} with fields: {payload}")
             # r = session.post(form_url, data=fields )
 
@@ -392,30 +390,13 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
     zones = form.find_all(class_="zone")
 
     for zone in zones:
-        zoneTitle = zone.find(class_="subtitle")
-        if zoneTitle is None:
-            continue
-        zoneTitle = zoneTitle.text.strip()
-        if zoneTitle not in relevant_zone_titles:
-            continue
-        logging.info(f"Zone title: {subject.name} - {zoneTitle}")
+        zone_title, zone_rows = extract_title_and_rows(zone)
 
-        zoneContent = zone.find(class_="zonecontent")
-        zoneDispTable = zone.find(class_="displaytable")
-        if zoneDispTable is None:
-            text = re.sub(r'\s+', ' ', zoneContent.text)
-            logging.info(text)
-            continue
-
-        zoneRows = zoneDispTable.find_all("tr")
-
-        options = list(filter(lambda c: turma in c.text, zoneRows))
-        if len(options) == 0:
+        option = find_class_row(zone_rows, turma)
+        if option is None:
             logging.info(
-                f"No option {turma} for {zoneTitle} in {subject.name}")
+                f"No option {turma} for {zone_title} in {subject.name}")
             continue
-
-        option = options[0]
 
         inp = option.find(is_turma_tag)
         if inp is None:
@@ -455,15 +436,20 @@ def log_status(r: Response, *args, **kwargs):
 
 
 if __name__ == "__main__":
+    # Username configuration
     config = load_configs()
     if config is None:
         exit()
+    # Loggins configuration
     logging.basicConfig(
         format="%(asctime)s %(levelname)-8s %(message)s",
         level=logging.INFO,
         datefmt="%H:%M:%S")
+
+    # Session configuration
     session = requests.Session()
     session.hooks['response'].append(log_status)
+
     success, res = login(session)
     if not success:
         logging.info("Login attempt failed")
@@ -478,7 +464,13 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    gen_subject_configs(subjects, session)
+    success = gen_subject_configs(subjects, session)
+    if success:
+        logging.info(f"Configuration complete. File name: {configs_file_name}")
+    else:
+        logging.error(
+            "Something went wrong when generating configuration file.")
+
     # do_register(subjects, session)
     # IHC = next(s for s in subjects if s.name ==
     #            "Interação Humano-Computador")
