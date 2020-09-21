@@ -308,6 +308,8 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
 
         for zone in zones:
             zone_title, zone_rows = extract_title_and_rows(zone)
+            if zone_rows is None:
+                continue
             if zone_title not in relevant_zone_titles:
                 continue
             info[zone_title] = {"want": "ESCOLHE UMA OPCAO", "options": []}
@@ -348,6 +350,8 @@ def do_register(subjects: List[Subject], session: Session):
 
         for zone in zones:
             zone_title, zone_rows = extract_title_and_rows(zone)
+            if zone_rows is None:
+                continue
             if zone_title not in relevant_zone_titles:
                 continue
 
@@ -391,7 +395,8 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
 
     for zone in zones:
         zone_title, zone_rows = extract_title_and_rows(zone)
-
+        if zone_rows is None:
+            continue
         option = find_class_row(zone_rows, turma)
         if option is None:
             logging.info(
@@ -420,10 +425,19 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
         #     f.write(r.text)
         if r.url == "https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do":
             # TODO: verificar se está de facto inscrito, pode ser que não há inscrições a decorrer.
-            logging.info("Gotcha!")
+            page = BeautifulSoup(r.text, 'html.parser')
+            subjects_form = page.find(id="listaInscricoesFormBean")
+            subjects_table_rows = subjects_form.find(
+                class_="displaytable").tbody.find_all("tr")
+            subject_row = next(
+                r for r in subjects_table_rows if subject.name in r.text)
+            if turma in subject_row.text:
+                logging.info("Gotcha!")
+                return
+            else:
+                logging.info("Not yet.. maybe inscrições não começaram?")
             # nr.Notify().send(
             #     f"Inscrição na turma {turma} de {subject.name} completa.")
-            return
         elif r.url == "https://inforestudante.uc.pt/nonio/inscturmas/inscrever.do?method=submeter":
             logging.info("Not yet.. trying again")
             r = session.get(
@@ -468,14 +482,14 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    success = gen_subject_configs(subjects, session)
-    if success:
-        logging.info(f"Configuration complete. File name: {configs_file_name}")
-    else:
-        logging.error(
-            "Something went wrong when generating configuration file.")
+    # success = gen_subject_configs(subjects, session)
+    # if success:
+    #     logging.info(f"Configuration complete. File name: {configs_file_name}")
+    # else:
+    #     logging.error(
+    #         "Something went wrong when generating configuration file.")
 
     # do_register(subjects, session)
-    # IHC = next(s for s in subjects if s.name ==
-    #            "Interação Humano-Computador")
-    # class_sniper(IHC, "PL1", session)
+    IHC = next(s for s in subjects if s.name ==
+               "Interação Humano-Computador")
+    class_sniper(IHC, "PL1", session)
