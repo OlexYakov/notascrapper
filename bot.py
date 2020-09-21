@@ -10,6 +10,8 @@ from requests import Response
 from requests.sessions import Session
 import logging
 from time import sleep
+import notify_run as nr
+
 config = None
 configs_file_name = 'configs.ini'
 infor_base_url = "https://inforestudante.uc.pt"
@@ -459,17 +461,21 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
         logging.info(f"Posted, res status code: {r.status_code}, url: {r.url}")
         if r.status_code != 200:
             return
-
+        # with open("temp.html", "w") as f:
+        #     f.write(r.text)
         if r.url == "https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do":
+            # TODO: verificar se está de facto inscrito, pode ser que não há inscrições a decorrer.
             logging.info("Gotcha!")
+            # nr.Notify().send(
+            #     f"Inscrição na turma {turma} de {subject.name} completa.")
             return
         elif r.url == "https://inforestudante.uc.pt/nonio/inscturmas/inscrever.do?method=submeter":
             logging.info("Not yet.. trying again")
             r = session.get(
                 "https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do")
             r = session.get(subject.url)
-        with open("test.html", "w") as f:
-            f.write(r.text)
+        # with open("test.html", "w") as f:
+        #     f.write(r.text)
         # TODO log answer
         sleep(time)
 
