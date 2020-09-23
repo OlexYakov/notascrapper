@@ -4,13 +4,14 @@ from logging import log
 from pyclbr import Function
 from re import fullmatch, sub
 import time
-from typing import Dict, List, Tuple
+from typing import Deque, Dict, List, Tuple
 from bs4 import BeautifulSoup
 import re
 import json
 import requests
 from requests import Response
 from requests.sessions import Session
+from dataclasses import dataclass
 import logging
 from time import sleep
 
@@ -87,6 +88,14 @@ class Form():
 
     def __repr__(self) -> str:
         return f"{self.id}\t{self.action_url}\t{self.inputs}"
+
+
+@dataclass
+class Payload():
+    subject: Subject
+    form_url: str
+    payload: Dict
+    turma: str
 
 
 def NoneIfException(f: Function, *args):
@@ -329,7 +338,7 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
     return True
 
 
-def do_register(subjects: List[Subject], session: Session):
+def do_register(subjects: List[Subject], session: Session, time=5):
     try:
         turmas = json.load(open(turmas_file_name))
     except FileNotFoundError:
@@ -340,8 +349,9 @@ def do_register(subjects: List[Subject], session: Session):
     except:
         raise
 
+    payloads: Deque[Payload] = Deque()
+    # Generate payloads
     for subject in [s for s in subjects if s.url is not None]:
-        payload = {}
 
         form = get_subject_form(subject)
         form_url = infor_base_url + form['action']
@@ -352,77 +362,42 @@ def do_register(subjects: List[Subject], session: Session):
             zone_title, zone_rows = extract_title_and_rows(zone)
             if zone_rows is None:
                 continue
-            if zone_title not in relevant_zone_titles:
-                continue
-
-            choise = turmas[subject.name][zone_title]["want"]
-            option = find_class_row(zone_rows, choise)
+            turma = turmas[subject.name][zone_title]["want"]
+            option = find_class_row(zone_rows, turma)
             if option is None:
                 logging.info(
-                    f"No option {choise} for {zone_title} in {subject.name}")
+                    f"No option {turma} for {zone_title} in {subject.name}")
                 continue
 
             inp = option.find(is_turma_tag)
             if inp is None:
                 logging.info(
                     f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
-                continue
+                # Extract input value from the horarios input
+                value = option.find('input')['value']
+                p = {"inscrever": value}
+                payloads.append(Payload(subject, form_url, p, turma))
+            else:
+                vagas = option.find_all('td')[-3].text
+                logging.info(f"You're in luck, a turma ainda tem {vagas}")
+                p = {inp['name']: inp['value']}
+                payloads.append(Payload(subject, form_url, p, turma))
+            break
 
-            payload[inp['name']] = inp['value']
+    logging.info(f"Payloads ready, number of payloads: {len(payloads)}.")
 
-        if payload:
-            logging.info(f"TRY: POST {form_url} with fields: {payload}")
-            # r = session.post(form_url, data=fields )
-
-            # if r.status_code != 200:
-            #     logging.info(
-            #         f"Register to {d.name} with fields {form} failed with status {r.status_code}")
-            # TODO check if url redirected to
-            # https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do
-
-
-def class_sniper(subject: Subject, turma: str, session: Session, time=10):
-
-    payload = {}
-    logging.info(
-        f"Begining to snipe class {turma} for {subject.name} with {time} second intervals")
-
-    form = get_subject_form(subject)
-    # TODO form_url inside form?
-    form_url = infor_base_url + form['action']
-
-    zones = form.find_all(class_="zone")
-
-    for zone in zones:
-        zone_title, zone_rows = extract_title_and_rows(zone)
-        if zone_rows is None:
-            continue
-        option = find_class_row(zone_rows, turma)
-        if option is None:
-            logging.info(
-                f"No option {turma} for {zone_title} in {subject.name}")
-            continue
-
-        inp = option.find(is_turma_tag)
-        if inp is None:
-            logging.info(
-                f"Something went wrong: {option.find_all('td')[-1].text.strip()}")
-            # Extract input value from the horarios input
-            value = option.find('input')['value']
-            payload["inscrever"] = value
-        else:
-            vagas = option.find_all('td')[-3].text
-            logging.info(f"You're in luck, a turma ainda tem {vagas}")
-            payload[inp['name']] = inp['value']
-        break
-    logging.info(f"Payload ready, fields to post: {payload}")
-    while True:
+    while payloads:
+        p = payloads.popleft()
+        subject = p.subject
+        form_url = p.form_url
+        turma = p.turma
+        payload = p.payload
+        logging.info(f"Snnipping {subject.name} - {turma}")
         r = session.post(form_url, data=payload)
-        logging.info(f"Posted, res status code: {r.status_code}, url: {r.url}")
         if r.status_code != 200:
-            return
-        # with open("temp.html", "w") as f:
-        #     f.write(r.text)
+            logging.error("Something went wrong")
+            continue
+
         if r.url == "https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do":
             # TODO: verificar se está de facto inscrito, pode ser que não há inscrições a decorrer.
             page = BeautifulSoup(r.text, 'html.parser')
@@ -433,20 +408,26 @@ def class_sniper(subject: Subject, turma: str, session: Session, time=10):
                 r for r in subjects_table_rows if subject.name in r.text)
             if turma in subject_row.text:
                 logging.info("Gotcha!")
-                return
+                continue
             else:
-                logging.info("Not yet.. maybe inscrições não começaram?")
-            # nr.Notify().send(
-            #     f"Inscrição na turma {turma} de {subject.name} completa.")
+                turma_current = next(
+                    i for i in subject_row.text.strip().split("\n") if turma[:-1] in i)
+                logging.info(
+                    f"Not yet.. still in {turma_current}. Maybe inscrições não começaram?")
         elif r.url == "https://inforestudante.uc.pt/nonio/inscturmas/inscrever.do?method=submeter":
             logging.info("Not yet.. trying again")
             r = session.get(
                 "https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do")
             r = session.get(subject.url)
-        # with open("test.html", "w") as f:
-        #     f.write(r.text)
-        # TODO log answer
+        else:
+            logging.error(
+                "Something went wrong. Should not have been redirected here")
+            return
+            # TODO recover and re-start process
+        payloads.append(p)  # add to end of list
         sleep(time)
+
+    logging.info("Done")
 
 
 def log_status(r: Response, *args, **kwargs):
@@ -482,14 +463,4 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
 
-    # success = gen_subject_configs(subjects, session)
-    # if success:
-    #     logging.info(f"Configuration complete. File name: {configs_file_name}")
-    # else:
-    #     logging.error(
-    #         "Something went wrong when generating configuration file.")
-
-    # do_register(subjects, session)
-    IHC = next(s for s in subjects if s.name ==
-               "Interação Humano-Computador")
-    class_sniper(IHC, "PL1", session)
+    do_register(subjects, session)
