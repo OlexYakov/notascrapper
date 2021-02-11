@@ -185,7 +185,6 @@ def load_configs() -> configparser.ConfigParser:
 def login(session: Session) -> Tuple[bool, Response]:
     # GET infor page
     r = session.get(infor_login_url)
-    logging.info(f"GET {infor_login_url}, status: {r.status_code}")
     if r.status_code != 200:
         return (False, r)
 
@@ -205,7 +204,6 @@ def login(session: Session) -> Tuple[bool, Response]:
         "password": config.defaults()['password']}
     r = session.post(login_url, data=form_data)
 
-    logging.info(f"POST Login request status: {r.status_code}")
     if r.status_code != 200:
         return (False, r)
 
@@ -219,14 +217,20 @@ def login(session: Session) -> Tuple[bool, Response]:
     return (True, r)
 
 
-def navigate_subjects_page(session: Session) -> Tuple[bool, Response]:
+def navigate_subjects_page(session: Session, relogin: bool = True) -> Tuple[bool, Response]:
     # Get list of classes
     r = session.get(infor_insc_turmas_url)
     if r.status_code != 200:
         logging.info(r.status_code)
         return False, None
+    if r.url is not infor_insc_turmas_url:
+        logging.info("Navigate to subjects page failed. Relogin and retry")
+        sucess, res = login(session)
+
     page = BeautifulSoup(r.text, 'html.parser')
     # TODO avisar caso LEI não se a primeira
+    # quickfix
+
     next_link_part = page.find(id="link_0").a["href"]
     url = gen_link(infor_insc_turmas_url, next_link_part)
     r = session.post(url)
@@ -421,11 +425,8 @@ def do_register(subjects: List[Subject], session: Session, time=5):
                 r for r in subjects_table_rows if subject.name in r.text)
             if turma in subject_row.text:
                 logging.info("Gotcha!")
-                try:
-                    with open("success.log", "a") as f:
-                        f.write(f"{subject.name}  -  {turma}")
-                except e:
-                    continue
+                with open("success.log", "a") as f:
+                    f.write(f"{subject.name}  -  {turma}")
                 continue
             else:
                 logging.info(f"Current: {subject_row.text}")
@@ -486,4 +487,4 @@ if __name__ == "__main__":
 
     subjects = extract_subjects(res)
     #gen_subject_configs(subjects, session)
-    do_register(subjects, session, 1)
+    do_register(subjects, session, 2)
