@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import configparser
 import datetime
 from logging import log
@@ -21,6 +22,7 @@ turmas_file_name = "turmas.json"
 infor_base_url = "https://inforestudante.uc.pt"
 infor_login_url = infor_base_url + "/nonio/security/login.do"
 infor_insc_turmas_url = infor_base_url + "/nonio/inscturmas/init.do"
+infor_insc_turmas_base = infor_base_url + "/nonio/inscturmas/"
 infor_subjects_url = infor_base_url + \
     "/nonio/inscturmas/listaInscricoes.do?args=5189681149284684"
 infor_pautas_url = infor_base_url + "/nonio/pautas/pesquisaPautas.do"
@@ -28,7 +30,8 @@ infor_init_url = infor_base_url + "/security/init.do"
 relevant_zone_titles = [
     "Teórico-Prática",
     "Teórico-Práticas",
-    "Práticas-Laboratoriais"
+    "Práticas-Laboratoriais",
+    "Práticas e Laboratórios"
 ]
 
 
@@ -261,6 +264,7 @@ def extract_title_and_rows(zone: BeautifulSoup) -> Tuple[str, List[BeautifulSoup
     if zone_title is not None:
         zone_title = zone_title.text.strip()
     if zone_title not in relevant_zone_titles:
+        logging.info(f"{zone_title} title not in relevant zone titles. Skiping.")
         return zone_title, None
     logging.info(f"Zone title: {zone_title}")
 
@@ -330,7 +334,7 @@ def gen_subject_configs(subjects: List[Subject], session: Session) -> bool:
                     re.sub(r'\s+', ' ', zone_cols[0].text))
                 row_text = "\t".join(re.sub(r'\s+', ' ', col.text)
                                      for col in zone_cols)
-                logging.info("\t"+row_text)
+                logging.info("\t" + row_text)
 
         subjects_info[subject.name] = info
     with open(turmas_file_name, "w") as f:
@@ -352,7 +356,8 @@ def do_register(subjects: List[Subject], session: Session, time=5):
     payloads: Deque[Payload] = Deque()
     # Generate payloads
     for subject in [s for s in subjects if s.url is not None]:
-
+        if subject.name not in turmas:
+            continue
         form = get_subject_form(subject)
         form_url = infor_base_url + form['action']
 
@@ -392,12 +397,20 @@ def do_register(subjects: List[Subject], session: Session, time=5):
         form_url = p.form_url
         turma = p.turma
         payload = p.payload
+
+        success, res = navigate_subjects_page(session)
+        page = BeautifulSoup(res.text, 'html.parser')
+
+        td = next(t for t in page.find_all(
+            "td", {"class": "contentLeft"}) if subject.name in t.text).parent
+        insc_url = td.find("a")["href"]
+        session.get(infor_insc_turmas_base + insc_url)
+
         logging.info(f"Snnipping {subject.name} - {turma}")
         r = session.post(form_url, data=payload)
         if r.status_code != 200:
             logging.error("Something went wrong")
             continue
-
         if r.url == "https://inforestudante.uc.pt/nonio/inscturmas/listaInscricoes.do":
             # TODO: verificar se está de facto inscrito, pode ser que não há inscrições a decorrer.
             page = BeautifulSoup(r.text, 'html.parser')
@@ -408,12 +421,23 @@ def do_register(subjects: List[Subject], session: Session, time=5):
                 r for r in subjects_table_rows if subject.name in r.text)
             if turma in subject_row.text:
                 logging.info("Gotcha!")
+                try:
+                    with open("success.log", "a") as f:
+                        f.write(f"{subject.name}  -  {turma}")
+                except e:
+                    continue
                 continue
             else:
-                turma_current = next(
-                    i for i in subject_row.text.strip().split("\n") if turma[:-1] in i)
-                logging.info(
-                    f"Not yet.. still in {turma_current}. Maybe inscrições não começaram?")
+                logging.info(f"Current: {subject_row.text}")
+                turma_current = [
+                    i for i in subject_row.text.strip().split("\n") if turma[:-1] in i]
+                if turma_current:
+                    turma_current = next(turma_current)
+                    logging.info(
+                        f"Not yet.. still in {turma_current}.")
+                else:
+                    #['01000068', 'Análise Matemática II\xa0*', '2.º Semestre', 'T1', '11-02-2021 13:00', '11-02-2021 23:49', 'Inscrições']
+                    logging.info(f"Not yet.. inscrições a não estão a decorrer maybe?")
         elif r.url == "https://inforestudante.uc.pt/nonio/inscturmas/inscrever.do?method=submeter":
             logging.info("Not yet.. trying again")
             r = session.get(
@@ -422,7 +446,6 @@ def do_register(subjects: List[Subject], session: Session, time=5):
         else:
             logging.error(
                 "Something went wrong. Should not have been redirected here")
-            return
             # TODO recover and re-start process
         payloads.append(p)  # add to end of list
         sleep(time)
@@ -462,5 +485,5 @@ if __name__ == "__main__":
     logging.info("Inside classes page")
 
     subjects = extract_subjects(res)
-
-    do_register(subjects, session)
+    #gen_subject_configs(subjects, session)
+    do_register(subjects, session, 1)
